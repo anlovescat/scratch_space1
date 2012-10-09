@@ -63,9 +63,9 @@ class RollSim(object):
         self.param_array_dates = []
         date_pairs = self.split_dates()
         for train_dates, sim_dates in date_pairs:
-            print "Training on %s"%(", ".join(train_dates))
+            print "Training on %s"%(", ".join([str(tdt) for tdt in train_dates]))
             param = self.TrainFunc(self._result, train_dates)
-            print "Simulate on %s"%(", ".join(sim_dates))
+            print "Simulate on %s"%(", ".join([str(sdt) for sdt in sim_dates]))
             pnl_tmp = self.SimFunc(self._result, sim_dates, param)
             print "Done!"
             if pnl_array is None:
