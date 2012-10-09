@@ -2,8 +2,8 @@ import csv
 from matplotlib.mlab import csv2rec
 import numpy as np
 
-SHANGHAI_FILE = 'shanghai_list.csv'
-SHENZHEN_FILE = 'shenzhen_list.csv'
+SHANGHAI_FILE = '/home/mingyuan/Projects/mfipy/shanghai_list.csv'
+SHENZHEN_FILE = '/home/mingyuan/Projects/mfipy/shenzhen_list.csv'
 
 HEADER = ['last_price', 'volume', 'ticker', 'amount', 'vol_per_trade',
           'exchange_percent', 'pe_ratio', 'liquid_asset', 'total_asset', 'pb_ratio']
