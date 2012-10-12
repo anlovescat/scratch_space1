@@ -10,6 +10,8 @@ def getYahooData(ticker, date1, date2):
     data = np.array(data, dtype = [('Date', datetime.date), 
                                    ('Open', float), ('Close', float), ('High', float),
                                    ('Low', float), ('Volume', float)])
+    idx = np.where(data['Volume'] > 0)
+    data = data[idx]
     return data
 
 
