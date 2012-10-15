@@ -27,7 +27,7 @@ def stein_estimator_approx(scaled_t_stat_list):
 def mean_estimation(list_of_arrays, use_stein=False):
     list_of_arrays = [winsorize(array, 99) for array in list_of_arrays]
     mean_of_arrays = [array.mean() for array in list_of_arrays]
-    std_of_arrays = [array.std() for array in list_of_arrays]
+    std_of_arrays = [array.std() / np.sqrt(len(array)) for array in list_of_arrays]
     if use_stein:
         scaled_t_of_arrays = [mn / sd for (mn, sd) in zip(mean_of_arrays, std_of_arrays)]
         est = stein_estimator_approx(scaled_t_of_arrays)
@@ -41,21 +41,21 @@ def cov_estimation(list_of_recarrays, index_name, pair_wise=False):
         assert len(name) == 1
         return name[0]
     for array in list_of_recarrays:
-        array[get_the_other_name(array, index_name)] = winsorize(array[get_the_other_name(array, index_name)])
+        array[get_the_other_name(array, index_name)] = winsorize(array[get_the_other_name(array, index_name)], 99)
     nn = len(list_of_recarrays)
     if not pair_wise:
         new_rec = list_of_recarrays[0]
         for ii in range(1, nn):
-            new_rec = rec_join(index_name, new_rec, list_of_recarrays[ii], jointype='inner')
-            dat_mat = np.c_[[new_rec[nm] for nm in new_rec.dtype.names if nm != index_name]].T
+            new_rec = rec_join(index_name, new_rec, list_of_recarrays[ii], jointype='inner', defaults=None, r1postfix='', r2postfix=str(ii+1))
+            dat_mat = np.c_[[new_rec[nm] for nm in new_rec.dtype.names if nm != index_name]]
             covmat = np.cov(dat_mat)
     else :
         covmat = np.zeros((nn, nn))
         for ii in range(0, nn):
             covmat[ii,ii] = list_of_recarrays[ii][get_the_other_name(list_of_recarrays[ii], index_name)].var()
             for jj in range(ii+1, nn):
-                new_rec = rec_join(index_name, list_of_recarrays[ii], list_of_recarrays[jj], jointype='inner')
-                dat_mat = np.c_[[new_rec[nm] for nm in new_rec.dtype.names if nm != index_name]].T
+                new_rec = rec_join(index_name, list_of_recarrays[ii], list_of_recarrays[jj], jointype='inner', defaults=None, r1postfix='1', r2postfix='2')
+                dat_mat = np.c_[[new_rec[nm] for nm in new_rec.dtype.names if nm != index_name]]
                 tmp_cov = np.cov(dat_mat)[0,1]
                 covmat[ii,jj] = tmp_cov
                 covmat[jj,ii] = tmp_cov
@@ -71,6 +71,8 @@ class MeanVariance(object):
         self.covMat = None
         self.targetRisk = None
         self.optimizationMode = None
+
+        self.fixedPosition = None
 
         self.optimizedWeights = []
         self.optimizedMean = None
@@ -88,7 +90,7 @@ class MeanVariance(object):
         b = matrix(1.0)
         
         NN = 100
-        mus = [ 10 ** (5.0 * t/NN - 1.0) for t in range(NN)]
+        mus = [ 10 ** (10.0 * t/NN - 1.0) for t in range(NN)]
         portfolios = [solvers.qp(mu * P, -pbar, G, h, A, b)['x'] for mu in mus]
         returns = [ dot(pbar, x) for x in portfolios ]
         risks = [np.sqrt(dot(x, P * x)) for x in portfolios]
@@ -111,7 +113,7 @@ class MeanVariance(object):
         b = matrix(1.0)
         
         NN = 100
-        mus = [ 10 ** (5.0 * t/NN - 1.0) for t in range(NN)]
+        mus = [ 10 ** (10.0 * t/NN - 1.0) for t in range(NN)]
         portfolios = [solvers.qp(mu * P, -pbar, G, h, A, b)['x'] for mu in mus]
         returns = [ dot(pbar, x) for x in portfolios ]
         risks = [np.sqrt(dot(x, P * x)) for x in portfolios]
@@ -135,14 +137,21 @@ class MeanVariance(object):
         G[::n+1] = -1.0
         h = matrix(0.0, (n, 1))
         A = matrix(1.0, (1, n))
+        
+        def sum_or_1(x):
+            valu = sum(x)
+            if valu == 0.0:
+                return 1.0
+            else :
+                return valu
 
         
         NN = 100
-        mus = [ 10 ** (5.0 * t/NN - 1.0) for t in range(NN)]
+        mus = [ 10 ** (10.0 * t/NN - 1.0) for t in range(NN)]
         if normalize:
             #portfolios = [matrix(np.round(solvers.qp(mu * P, -pbar, G, h, A, matrix(nn*1.0))['x'] * nn) * 1.0 / nn) for mu in mus for nn in range(1, n+1)]
             portfolios = [matrix(1.0 * (np.round(solvers.qp(mu * P, -pbar + lamb, G, h, A, matrix(nn*1.0))['x']) > 0)) for mu in mus for nn in range(1, n+1)]
-            portfolios = [x / sum(x) for x in portfolios]
+            portfolios = [x / sum_or_1(x) for x in portfolios]
         else :
             portfolios = [matrix(1.0 * (np.round(solvers.qp(mu * P, -pbar + lamb, G, h, A, matrix(nn*1.0))['x']) > 0)) for mu in mus for nn in range(1, n+1)]
             
@@ -154,6 +163,104 @@ class MeanVariance(object):
         self.optimizedRisk = risks[idx]
 
 
+    def _hedge_with_no_constraint(self):
+        ### common set up
+        n = len(self.meanList)
+        P = matrix(self.covMat)
+        pbar = matrix(self.meanList)
+        G = matrix(0.0, (n, n))
+        h = matrix(0.0, (n, 1))
+        key = self.fixedPosition.keys()
+        A = matrix(0.0, (len(key), n))
+        b = matrix(0.0, (len(key), 1))
+        for ii in range(len(key)):
+            A[ii, key[ii]] = 1.0
+            b[ii, 0] = self.fixedPosition[ii]
+        
+        NN = 100
+        mus = [ 10 ** (10.0 * t/NN - 1.0) for t in range(NN)]
+        portfolios = [solvers.qp(mu * P, -pbar, G, h, A, b)['x'] for mu in mus]
+        returns = [ dot(pbar, x) for x in portfolios ]
+        risks = [np.sqrt(dot(x, P * x)) for x in portfolios]
+        idx = np.argmin(np.abs(np.array(risks) - self.targetRisk))
+        self.optimizedWeights = np.array(portfolios[idx]).T.tolist()[0]
+        self.optimizedMean = returns[idx]
+        self.optimizedRisk = risks[idx]
+        
+        
+
+    def _hedge_with_positive_constraint(self):
+        ### common set up
+        n = len(self.meanList)
+        P = matrix(self.covMat)
+        pbar = matrix(self.meanList)
+        G = matrix(0.0, (n, n))
+        G[::n+1] = -1.0
+        h = matrix(0.0, (n, 1))
+        key = self.fixedPosition.keys()
+        A = matrix(0.0, (len(key), n))
+        b = matrix(0.0, (len(key), 1))
+        for ii in range(len(key)):
+            A[ii, key[ii]] = 1.0
+            b[ii, 0] = self.fixedPosition[ii]
+
+        NN = 100
+        mus = [ 10 ** (10.0 * t/NN - 1.0) for t in range(NN)]
+        portfolios = [solvers.qp(mu * P, -pbar, G, h, A, b)['x'] for mu in mus]
+        returns = [ dot(pbar, x) for x in portfolios ]
+        risks = [np.sqrt(dot(x, P * x)) for x in portfolios]
+        idx = np.argmin(np.abs(np.array(risks) - self.targetRisk))
+        self.optimizedWeights = np.array(portfolios[idx]).T.tolist()[0]
+        self.optimizedMean = returns[idx]
+        self.optimizedRisk = risks[idx]
+
+    def _hedge_with_zeroone_constraint(self, normalize=True):
+        ### common set up
+        n = len(self.meanList)
+        PP = matrix(self.covMat)
+        P = self.covMat.copy()
+        UU, ss, VV = np.linalg.svd(P)
+        lamb = min(ss) * 0.99
+        print lamb
+        P[::n+1] -= lamb
+        P = matrix(P)
+        pbar = matrix(self.meanList)
+        G = matrix(0.0, (n, n))
+        G[::n+1] = -1.0
+        key = self.fixedPosition.keys()
+        A = matrix(0.0, (len(key), n))
+        b = matrix(0.0, (len(key), 1))
+        for ii in range(len(key)):
+            A[ii, key[ii]] = 1.0
+            b[ii, 0] = self.fixedPosition[ii]
+        
+        def sum_or_1(x):
+            valu = sum(x)
+            if valu == 0.0:
+                return 1.0
+            else :
+                return valu
+
+        
+        NN = 100
+        mus = [ 10 ** (10.0 * t/NN - 1.0) for t in range(NN)]
+        if normalize:
+            #portfolios = [matrix(np.round(solvers.qp(mu * P, -pbar, G, h, A, matrix(nn*1.0))['x'] * nn) * 1.0 / nn) for mu in mus for nn in range(1, n+1)]
+            portfolios = [matrix(1.0 * (np.round(solvers.qp(mu * P, -pbar + lamb, G, h, A, matrix(nn*1.0))['x']) > 0)) for mu in mus for nn in range(1, n+1)]
+            portfolios = [x / sum_or_1(x) for x in portfolios]
+        else :
+            portfolios = [matrix(1.0 * (np.round(solvers.qp(mu * P, -pbar + lamb, G, h, A, matrix(nn*1.0))['x']) > 0)) for mu in mus for nn in range(1, n+1)]
+            
+        returns = [ dot(pbar, x) for x in portfolios ]
+        risks = [np.sqrt(dot(x, PP * x)) for x in portfolios]
+        idx = np.argmin(np.abs(np.array(risks) - self.targetRisk))
+        self.optimizedWeights = np.array(portfolios[idx]).T.tolist()[0]
+        self.optimizedMean = returns[idx]
+        self.optimizedRisk = risks[idx]
+
+
+
+
     def run(self, mode, normalize=True):
         self.optimizationMode = mode
         if mode == 'no':
@@ -162,6 +269,15 @@ class MeanVariance(object):
             self._optimize_with_positive_constraint()
         elif mode == 'zeroone':
             self._optimize_with_zeroone_constraint(normalize)
+        elif mode == 'hedge|no':
+            self._hedge_with_no_constraint()
+        elif mode == 'hedge|positive':
+            self._hedge_with_positive_constraint()
+        elif mode == 'hedge|zeroone':
+            if normalize:
+                print 'Setting normalize to False in hedge mode'
+            self._hedge_with_zeroone_constraint(normalize=False)
+
 
 
     def printResult(self):
